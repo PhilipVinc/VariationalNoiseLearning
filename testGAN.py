@@ -37,8 +37,6 @@ batch_size = 128
 #   size using a transformer.
 image_size = 64
 
-# Number of channels in the training images. For color images this is 3
-nc = 3
 
 # Size of z latent vector (i.e. size of generator input)
 nz = 1
@@ -73,46 +71,89 @@ ngpu = 0
 
 
 
-class NoisyDataset(Dataset):
-    def __init__(self):
+#class NoisyDataset(Dataset):
+#    def __init__(self):
 
+#       with open('dataset/all_bitstrings_4qubits.pkl', 'rb') as outp:
+#          data = pickle.load(outp)
+
+#       new_data = []
+#       for d in data:
+          #d is tuple (original_bitstring, counts_dictionary)
+#          listkey =[]
+#          for k in d[1].keys():
+#              for i in range(d[1][k]):
+                 
+#                 listkey.append(([int(ch) for ch in d[0]] ,[int(ch) for ch in k]))
+#                 new_data.append(listkey)
+       #temp_array = np.asarray(new_data)
+
+
+       
+#       self.samples = torch.from_numpy(temp_array)
+
+#    def __len__(self):
+#        return len(self.samples)
+
+#    def __getitem__(self, idx):
+#        return self.samples[idx]
+
+
+
+import jax.numpy as jnp
+import jax
+
+### Data Setup
+def convert(qstr):
+    return np.array(list(map(int, qstr)), dtype=float)
+    
+
+def load_data(data):
+    N = len(data[0][0])
+    tot_counts = jax.tree_util.tree_reduce(lambda x,y: x+y, [d[1] for d in data], initializer=0)
+    sigma = np.zeros((tot_counts,N), dtype=float)
+    eta = np.zeros((tot_counts,N), dtype=float)
+    
+    j = 0
+    for (k,v) in data:
+        _sigma = convert(k)
+        for kk,vv in v.items():
+            sigma[j:j+vv,:] = _sigma
+            eta[j:j+vv,:] = convert(kk)
+            j = j + vv
+
+    return jnp.array(sigma), jnp.array(eta)
+
+class NoisyDataset(Dataset):
+   def __init__(self):
        with open('dataset/all_bitstrings_4qubits.pkl', 'rb') as outp:
           data = pickle.load(outp)
 
-       new_data = []
-       for d in data:
-          #d is tuple (original_bitstring, counts_dictionary)
-          listkey =[]
-          for k in d[1].keys():
-              for i in range(d[1][k]):
-                 
-                 listkey.append(([int(ch) for ch in d[0]] ,[int(ch) for ch in k]))
-                 new_data.append(listkey)
-       temp_array = np.asarray(new_data)
-       
-       self.samples = torch.from_numpy(temp_array)
+       self.samples=load_data(data)
+   def __len__(self):
+       return len(self.samples[0])
 
-    def __len__(self):
-        return len(self.samples)
-
-    def __getitem__(self, idx):
-        return self.samples[idx]
-
+   def __getitem__(self, idx):
+       x,y = self.samples
+       return np.array(x[idx]), np.array(y[idx])
 
 
 dataset = NoisyDataset()
 
-print(len(dataset))
+
+
 
 # Create the dataloader
 dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size,
                                          shuffle=True, num_workers=workers)
+
+
 # Decide which device we want to run on
 device = torch.device("cuda:0" if (torch.cuda.is_available() and ngpu > 0) else "cpu")
 
 # Plot some training images
-real_batch = next(iter(dataloader))
 
+real_batch = next(iter(dataloader))
 # custom weights initialization called on netG and netD
 def weights_init(m):
     classname = m.__class__.__name__
@@ -128,7 +169,7 @@ class Generator(nn.Module):
         self.ngpu = ngpu
         self.main = nn.Sequential(
             # input is Z, going into a convolution
-            nn.Linear(nz, 8),
+            nn.Linear(nz+4, 8),
             #nn.BatchNorm2d(ngf * 8),
             nn.ReLU(True),
             # state size. (ngf*8) x 4 x 4
@@ -210,7 +251,7 @@ criterion = nn.BCELoss()
 
 # Create batch of latent vectors that we will use to visualize
 #  the progression of the generator
-fixed_noise = torch.randn(64, nz, 1, 1, device=device)
+fixed_noise = torch.randn(64, nz, device=device)
 
 # Establish convention for real and fake labels during training
 real_label = 1.
@@ -233,8 +274,6 @@ print("Starting Training Loop...")
 for epoch in range(num_epochs):
     # For each batch in the dataloader
     for i, data in enumerate(dataloader, 0):
-        if i>10: 
-            break
         ############################
         # (1) Update D network: maximize log(D(x)) + log(1 - D(G(z)))
         ###########################
@@ -242,6 +281,8 @@ for epoch in range(num_epochs):
         netD.zero_grad()
         # Format batch
         real_cpu = data[0].to(device) #read in noiseless state 
+ 
+       
         b_size = real_cpu.size(0)
         label = torch.full((b_size,), real_label, dtype=torch.float, device=device)
         # Forward pass real batch through D
@@ -254,9 +295,11 @@ for epoch in range(num_epochs):
 
         ## Train with all-fake batch
         # Generate batch of latent vectors
-        noise = torch.randn(b_size, nz, 1, 1, device=device)
-        # Generate fake image batch with G
-        fake = netG(noise)
+        noise = torch.randn(b_size, nz, device=device)
+        latent=np.concatenate((noise, data[1].to(device)), axis=1)
+        
+# Generate fake image batch with G
+        fake = netG(torch.tensor(latent))
         label.fill_(fake_label)
         # Classify all fake batch with D
         output = netD(fake.detach()).view(-1)
@@ -295,10 +338,10 @@ for epoch in range(num_epochs):
         D_losses.append(errD.item())
 
         # Check how the generator is doing by saving G's output on fixed_noise
-        if (iters % 500 == 0) or ((epoch == num_epochs-1) and (i == len(dataloader)-1)):
-            with torch.no_grad():
-                fake = netG(fixed_noise).detach().cpu()
-            img_list.append(vutils.make_grid(fake, padding=2, normalize=True))
+#        if (iters % 500 == 0) or ((epoch == num_epochs-1) and (i == len(dataloader)-1)):
+#            with torch.no_grad():
+#                fake = netG(fixed_noise).detach().cpu()
+#            img_list.append(vutils.make_grid(fake, padding=2, normalize=True))
 
         iters += 1
 
