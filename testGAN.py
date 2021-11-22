@@ -15,6 +15,9 @@ import torchvision.utils as vutils
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
+from torch.utils.data import Dataset
+import pickle 
+
 #from IPython.display import HTML
 
 # Set random seed for reproducibility
@@ -23,7 +26,6 @@ manualSeed = 999
 print("Random Seed: ", manualSeed)
 random.seed(manualSeed)
 torch.manual_seed(manualSeed)
-dataroot = "/Users/svalleco/cernbox/CERN/ACAT2019/UNOSAT_GAN/public/celeba"
 
 # Number of workers for dataloader
 workers = 0
@@ -60,33 +62,61 @@ beta1 = 0.5
 ngpu = 0
 # We can use an image folder dataset the way we have it setup.
 # Create the dataset
-dataset = dset.ImageFolder(root=dataroot,
-                           transform=transforms.Compose([
-                               transforms.Resize(image_size),
-                               transforms.CenterCrop(image_size),
-                               transforms.ToTensor(),
-                               transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-                           ]))
+#dataset = dset.ImageFolder(root=dataroot,
+#                           transform=transforms.Compose([
+#                               transforms.Resize(image_size),
+#                               transforms.CenterCrop(image_size),
+#                               transforms.ToTensor(),
+#                               transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+#                           ]))
+
+
+
+
+class NoisyDataset(Dataset):
+    def __init__(self):
+
+       with open('dataset/all_bitstrings_4qubits.pkl', 'rb') as outp:
+          data = pickle.load(outp)
+
+       new_data = []
+       for d in data:
+          #d is tuple (original_bitstring, counts_dictionary)
+          listkey =[]
+          for k in d[1].keys():
+              for i in range(d[1][k]):
+                 
+                 listkey.append(([int(ch) for ch in d[0]] ,[int(ch) for ch in k]))
+                 new_data.append(listkey)
+       temp_array = np.asarray(new_data)
+       
+       self.samples = torch.from_numpy(temp_array)
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        return self.samples[idx]
+
+
+
+dataset = NoisyDataset()
+
+print(len(dataset))
+
 # Create the dataloader
 dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size,
                                          shuffle=True, num_workers=workers)
-
 # Decide which device we want to run on
 device = torch.device("cuda:0" if (torch.cuda.is_available() and ngpu > 0) else "cpu")
 
 # Plot some training images
 real_batch = next(iter(dataloader))
 
-plt.figure(figsize=(8,8))
-plt.axis("off")
-plt.title("Training Images")
-plt.imshow(np.transpose(vutils.make_grid(real_batch[0].to(device)[:64], padding=2, normalize=True).cpu(),(1,2,0)))
-
-
 # custom weights initialization called on netG and netD
 def weights_init(m):
     classname = m.__class__.__name__
-    if classname.find('Conv') != -1:
+    if classname.find('Linear') != -1:
         nn.init.normal_(m.weight.data, 0.0, 0.02)
     elif classname.find('BatchNorm') != -1:
         nn.init.normal_(m.weight.data, 1.0, 0.02)
@@ -139,22 +169,22 @@ class Discriminator(nn.Module):
         self.ngpu = ngpu
         self.main = nn.Sequential(
             # input is (nc) x 64 x 64
-            nn.Linear(4,8)
+            nn.Linear(4,8),
             nn.LeakyReLU(0.2, inplace=True),
             # state size. (ndf) x 32 x 32
-            nn.Linear(8,16)
+            nn.Linear(8,16),
             #nn.BatchNorm2d(ndf * 2),
             nn.LeakyReLU(0.2, inplace=True),
             # state size. (ndf*2) x 16 x 16
-            nn.Linear(16,8)
+            nn.Linear(16,8),
             #nn.BatchNorm2d(ndf * 4),
             nn.LeakyReLU(0.2, inplace=True),
             # state size. (ndf*4) x 8 x 8
-            nn.Linear(8,4)
+            nn.Linear(8,4),
             #nn.BatchNorm2d(ndf * 8),
             nn.LeakyReLU(0.2, inplace=True),
             # state size. (ndf*8) x 4 x 4
-            nn.Linear(4,1)
+            nn.Linear(4,1),
             nn.Sigmoid()
         )
 
@@ -211,7 +241,7 @@ for epoch in range(num_epochs):
         ## Train with all-real batch
         netD.zero_grad()
         # Format batch
-        real_cpu = data[0].to(device)
+        real_cpu = data[0].to(device) #read in noiseless state 
         b_size = real_cpu.size(0)
         label = torch.full((b_size,), real_label, dtype=torch.float, device=device)
         # Forward pass real batch through D
