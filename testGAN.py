@@ -18,6 +18,10 @@ import matplotlib.animation as animation
 from torch.utils.data import Dataset
 import pickle 
 
+from torch.utils.tensorboard import SummaryWriter
+
+writer = SummaryWriter()
+
 #from IPython.display import HTML
 
 # Set random seed for reproducibility
@@ -33,10 +37,6 @@ workers = 0
 # Batch size during training
 batch_size = 128
 
-# Spatial size of training images. All images will be resized to this
-#   size using a transformer.
-image_size = 64
-
 
 # Size of z latent vector (i.e. size of generator input)
 nz = 1
@@ -48,25 +48,16 @@ ngf = 64
 ndf = 64
 
 # Number of training epochs
-num_epochs = 5
+num_epochs = 1
 
 # Learning rate for optimizers
-lr = 0.0002
+lr = 0.0005
 
 # Beta1 hyperparam for Adam optimizers
-beta1 = 0.5
+beta1 = 0.2
 
 # Number of GPUs available. Use 0 for CPU mode.
 ngpu = 0
-# We can use an image folder dataset the way we have it setup.
-# Create the dataset
-#dataset = dset.ImageFolder(root=dataroot,
-#                           transform=transforms.Compose([
-#                               transforms.Resize(image_size),
-#                               transforms.CenterCrop(image_size),
-#                               transforms.ToTensor(),
-#                               transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
-#                           ]))
 
 
 
@@ -163,29 +154,38 @@ def weights_init(m):
         nn.init.normal_(m.weight.data, 1.0, 0.02)
         nn.init.constant_(m.bias.data, 0)
 
+def G_discretize(G_output):
+    #G_output.shape = [batch_size, n_qubits]
+     X=torch.ones(G_output.shape)
+     Y=torch.zeros(G_output.shape)
+     return torch.where(G_output >0.5, X, Y) 
+
 class Generator(nn.Module):
     def __init__(self, ngpu):
         super(Generator, self).__init__()
         self.ngpu = ngpu
         self.main = nn.Sequential(
             # input is Z, going into a convolution
-            nn.Linear(nz+4, 8),
-            #nn.BatchNorm2d(ngf * 8),
+            nn.Linear(nz+4, 32),
+            nn.Dropout(0.2),
             nn.ReLU(True),
-            # state size. (ngf*8) x 4 x 4
-            nn.Linear(8, 16),
-            #nn.BatchNorm2d(ngf * 4),
+            nn.Linear(32, 256),
+            nn.Dropout(0.2),
             nn.ReLU(True),
-            # state size. (ngf*4) x 8 x 8
-            nn.Linear(16, 8),
-            #nn.BatchNorm2d(ngf * 2),
+            nn.Linear(256, 128),
+            nn.Dropout(0.2),
             nn.ReLU(True),
-            # state size. (ngf*2) x 16 x 16
-            nn.Linear(8,4),
-            #nn.BatchNorm2d(ngf),
-            # state size. (ngf) x 32 x 32
-            nn.Sigmoid()
-            # state size. (nc) x 64 x 64
+            nn.Linear(128,64),
+            nn.Dropout(0.2),
+            nn.ReLU(True),
+            nn.Linear(64,32),
+            nn.Dropout(0.2),
+            nn.ReLU(True),
+            nn.Linear(32,16),
+            nn.Dropout(0.2),
+            nn.ReLU(True),
+            nn.Linear(16,4),
+            nn.Softmax()
         )
 
     def forward(self, input):
@@ -209,22 +209,26 @@ class Discriminator(nn.Module):
         super(Discriminator, self).__init__()
         self.ngpu = ngpu
         self.main = nn.Sequential(
-            # input is (nc) x 64 x 64
-            nn.Linear(4,8),
-            nn.LeakyReLU(0.2, inplace=True),
-            # state size. (ndf) x 32 x 32
-            nn.Linear(8,16),
-            #nn.BatchNorm2d(ndf * 2),
-            nn.LeakyReLU(0.2, inplace=True),
-            # state size. (ndf*2) x 16 x 16
-            nn.Linear(16,8),
-            #nn.BatchNorm2d(ndf * 4),
-            nn.LeakyReLU(0.2, inplace=True),
-            # state size. (ndf*4) x 8 x 8
-            nn.Linear(8,4),
-            #nn.BatchNorm2d(ndf * 8),
-            nn.LeakyReLU(0.2, inplace=True),
-            # state size. (ndf*8) x 4 x 4
+            nn.Linear(4,32),
+            nn.Dropout(0.2),
+            nn.ReLU(True),
+            nn.Linear(32, 256),
+            nn.Dropout(0.2),
+            nn.ReLU(True),
+            nn.Linear(256, 128),
+            nn.Dropout(0.2),
+            nn.ReLU(True),
+            nn.Linear(128,64),
+            nn.Dropout(0.2),
+            nn.ReLU(True),
+            nn.Linear(64,32),
+            nn.Dropout(0.2),
+            nn.ReLU(True),
+            nn.Linear(32,16),
+            nn.Dropout(0.2),
+            nn.ReLU(True),
+            nn.Linear(16,4),
+            nn.ReLU(True),
             nn.Linear(4,1),
             nn.Sigmoid()
         )
@@ -282,7 +286,6 @@ for epoch in range(num_epochs):
         # Format batch
         real_cpu = data[0].to(device) #read in noiseless state 
  
-       
         b_size = real_cpu.size(0)
         label = torch.full((b_size,), real_label, dtype=torch.float, device=device)
         # Forward pass real batch through D
@@ -299,7 +302,7 @@ for epoch in range(num_epochs):
         latent=np.concatenate((noise, data[1].to(device)), axis=1)
         
 # Generate fake image batch with G
-        fake = netG(torch.tensor(latent))
+        fake = G_discretize(netG(torch.tensor(latent)))
         label.fill_(fake_label)
         # Classify all fake batch with D
         output = netD(fake.detach()).view(-1)
@@ -336,6 +339,9 @@ for epoch in range(num_epochs):
         # Save Losses for plotting later
         G_losses.append(errG.item())
         D_losses.append(errD.item())
+        writer.add_scalar("G_Loss/train", errG.item(), epoch)
+        writer.add_scalar("D_Loss/train", errD.item(), epoch)
+        writer.flush()
 
         # Check how the generator is doing by saving G's output on fixed_noise
 #        if (iters % 500 == 0) or ((epoch == num_epochs-1) and (i == len(dataloader)-1)):
@@ -344,8 +350,7 @@ for epoch in range(num_epochs):
 #            img_list.append(vutils.make_grid(fake, padding=2, normalize=True))
 
         iters += 1
-
-
+writer.close()
 plt.figure(figsize=(10,5))
 plt.title("Generator and Discriminator Loss During Training")
 plt.plot(G_losses,label="G")
